@@ -4,10 +4,14 @@ A platform for experimenting with agentic systems that assist during realtime co
 
 EchoScriber captures live audio (microphone and system playback), transcribes it in realtime, and feeds the transcript to a pluggable agent that can answer questions, extract decisions, summarize discussions, and generate other completions on demand.
 
+**The transcription pipeline is ready. The interesting part is what you build on top of it.**
+
+Fork this repo and write your own agent backend. The plugin contract is intentionally minimal — implement a few methods, point to your module in settings, and your agent is live.
+
 ## Architecture
 
 ```
-Audio capture → STT engine → Transcript store → Agent plugin → GUI
+Audio capture → STT engine → Transcript store → [Your agent here] → GUI
 ```
 
 **Audio layer** — PipeWire/PulseAudio mic and system loopback capture with optional echo cancellation.
@@ -16,9 +20,135 @@ Audio capture → STT engine → Transcript store → Agent plugin → GUI
 
 **Transcript store** — SQLite with FTS5 full-text search. Stores segments with timestamps, supports recent-window queries, keyword search, and cached chunk summaries.
 
-**Agent plugin system** — A stable contract (`TranscriptFeed` + `AgentPlugin` protocols) that any agent implementation can plug into. The default plugin (EchoAgent) supports multiple LLM providers and five completion modes.
+**Agent plugin system** — A stable contract (`TranscriptFeed` + `AgentPlugin` protocols) that any agent implementation can plug into. The default plugin (EchoAgent) is a reference implementation — it's meant to be replaced.
 
-### Agent modes
+## Build Your Own Agent
+
+The whole point of this project is to make it easy to experiment with different agentic approaches on a live transcript stream. Here's how.
+
+### The contract
+
+Your agent receives a `TranscriptFeed` — a read-only interface to the transcript store:
+
+```python
+class TranscriptFeed(Protocol):
+    def subscribe(self, callback: Callable[[TranscriptSegment], None]) -> None: ...
+    def recent(self, n_minutes: float) -> list[TranscriptSegment]: ...
+    def search(self, query: str, limit: int = 20) -> list[TranscriptSegment]: ...
+    def all_segments(self) -> list[TranscriptSegment]: ...
+    def session_id(self) -> str: ...
+```
+
+Your agent exposes results back to the GUI via Qt signals:
+
+```python
+class AgentPlugin(Protocol):
+    name: str
+    modes: list[AgentMode]  # which modes your agent supports
+
+    def attach(self, feed: TranscriptFeed) -> None: ...
+    def run(self, mode: AgentMode, query: str | None = None) -> None: ...
+    def cancel(self) -> None: ...
+
+    # Qt signals your class must define:
+    # token_received = Signal(str)      — streaming tokens
+    # completed = Signal(AgentResult)   — final result
+    # error = Signal(str)               — failure
+```
+
+That's it. Everything else — how you build context, which LLM you call, whether you use RAG or chain-of-thought or a local model or no model at all — is up to you.
+
+### Step-by-step: write a minimal agent
+
+1. **Fork and clone** this repo.
+
+2. **Create your agent module** anywhere under `src/echoscriber/agents/`:
+
+```
+src/echoscriber/agents/my_agent/
+├── __init__.py
+└── plugin.py
+```
+
+3. **Implement the plugin** in `plugin.py`:
+
+```python
+from PySide6.QtCore import QObject, Signal
+from echoscriber.agent_api import TranscriptFeed
+from echoscriber.models import AgentMode, AgentResult
+
+class MyAgent(QObject):
+    token_received = Signal(str)
+    completed = Signal(AgentResult)
+    error = Signal(str)
+
+    name = "MyAgent"
+    modes = [AgentMode.SUMMARY, AgentMode.QA]  # pick the modes you support
+
+    def attach(self, feed: TranscriptFeed) -> None:
+        self._feed = feed
+
+    def run(self, mode: AgentMode, query: str | None = None) -> None:
+        # Read from the feed
+        segments = self._feed.recent(10.0)
+        transcript = "\n".join(s.text for s in segments)
+
+        # Do your thing — call an LLM, run a local model, use a RAG pipeline...
+        response = your_logic_here(transcript, mode, query)
+
+        # Emit result
+        self.completed.emit(AgentResult(
+            mode=mode, query=query, response=response
+        ))
+
+    def cancel(self) -> None:
+        pass
+```
+
+4. **Export the factory** in `__init__.py`:
+
+```python
+from .plugin import MyAgent
+
+def create_plugin():
+    return MyAgent()
+```
+
+5. **Point to your agent** in `~/.config/echoscriber/settings.json`:
+
+```json
+{
+  "agent_plugin": "echoscriber.agents.my_agent"
+}
+```
+
+6. **Run it**: `echoscriber` — your agent is now live, responding to the Ask Agent button and hotkeys.
+
+### Ideas to try
+
+- **RAG pipeline** — embed transcript chunks with a local model, retrieve by similarity on each query
+- **Multi-agent orchestration** — one agent extracts entities, another answers questions, a third summarizes
+- **Proactive agent** — subscribe to the feed and push notifications when it detects action items or decisions, without waiting for the user to ask
+- **Local-only agent** — use Ollama or llama.cpp, never send transcript data to the cloud
+- **Structured extraction** — output JSON with decisions, owners, deadlines, sentiment
+- **Cross-session memory** — persist context across sessions, build a knowledge base from past conversations
+- **Tool-using agent** — give the LLM tools to search the web, look up docs, or run code based on what's being discussed
+- **Fine-tuned specialist** — train a small model on your meeting patterns for faster, cheaper completions
+
+### Streaming
+
+For a responsive UX, emit `token_received` as tokens arrive from your LLM rather than waiting for the full response. The agent pane renders tokens incrementally. See `agents/echo_agent/plugin.py` for an example using async streaming.
+
+## Default Agent (EchoAgent)
+
+The included EchoAgent is a reference implementation with:
+
+- Provider-agnostic LLM layer (Anthropic, OpenAI, Ollama)
+- Adaptive context building per mode (recent window, full session scan, FTS5 search)
+- Token-budgeted context assembly
+- Streaming output
+
+### Modes
 
 | Mode | Input | Output |
 |------|-------|--------|
@@ -27,18 +157,6 @@ Audio capture → STT engine → Transcript store → Agent plugin → GUI
 | Action Items | none | Checklist of todos and commitments |
 | Q&A | user question | Answer grounded in transcript context |
 | Explain | user question | Clarification of something from the conversation |
-
-### LLM backends
-
-EchoAgent is provider-agnostic. Supported backends:
-
-- **Anthropic** (Claude)
-- **OpenAI** (GPT-4o, etc.)
-- **Ollama** (local models)
-
-### Writing a custom agent plugin
-
-Any Python module that exposes `create_plugin() -> AgentPlugin` can replace the default EchoAgent. Set `agent_plugin` in settings to point to your module. See `src/echoscriber/agent_api.py` for the protocol definitions.
 
 ## Setup
 
@@ -65,7 +183,7 @@ sudo apt install pulseaudio-utils   # provides parec for audio capture
 
 ### Configuration
 
-Settings are stored in `~/.config/echoscriber/settings.json`. Agent configuration example:
+Settings are stored in `~/.config/echoscriber/settings.json`:
 
 ```json
 {
@@ -91,11 +209,9 @@ echoscriber
 - Use the mode dropdown + **Ask Agent** button (or `Ctrl+Shift+A`) to trigger completions
 - `Ctrl+Shift+Q` jumps straight to Q&A mode
 
-## Development
+## Contributing
 
-```bash
-python -m compileall src   # syntax validation
-```
+The best way to contribute is to build a novel agent and share what you learn. If you build something interesting, open a PR or an issue describing your approach.
 
 ## License
 
