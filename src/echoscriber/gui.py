@@ -314,7 +314,8 @@ class MainWindow(QMainWindow):
             self.aec.setChecked(bool(s["echo_cancellation"]))
 
     def _save_settings(self) -> None:
-        save_settings({
+        existing = load_settings()
+        existing.update({
             "source_mode": self.source_mode.currentText(),
             "mic_device": self._selected_device_name(self.mic_device),
             "monitor_device": self._selected_device_name(self.monitor_device),
@@ -322,6 +323,7 @@ class MainWindow(QMainWindow):
             "model": self.model.currentText(),
             "echo_cancellation": self.aec.isChecked(),
         })
+        save_settings(existing)
 
     @staticmethod
     def _set_combo_by_text(combo: QComboBox, value: str | None) -> None:
