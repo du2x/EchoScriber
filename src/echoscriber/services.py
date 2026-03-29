@@ -16,6 +16,7 @@ class SessionConfig:
     echo_cancellation: bool = True
     language: str = "en"
     model: str = "small"
+    stt_backend: str = "faster-whisper"  # "faster-whisper" | "huggingface"
 
 
 class MockRealtimePipeline(QObject):

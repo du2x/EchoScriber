@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from datetime import datetime
 
 from PySide6.QtCore import Qt
@@ -7,6 +8,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -18,8 +20,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .audio.devices import AudioDevice, list_mics, list_monitors
+from .config import load_settings, save_settings
 from .models import SourceMode, TranscriptSegment
-from .services import MockRealtimePipeline, SessionConfig
+from .services import SessionConfig
+from .session import SessionController
+
+_ACTIVITY_THRESHOLD_DB = -40.0
 
 
 class MainWindow(QMainWindow):
@@ -28,13 +35,20 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("EchoScriber")
         self.resize(980, 620)
 
-        self.pipeline = MockRealtimePipeline()
+        self.pipeline = SessionController()
         self.pipeline.partial_emitted.connect(self._on_partial)
         self.pipeline.final_emitted.connect(self._on_final)
         self.pipeline.status_changed.connect(self._set_status)
+        self.pipeline.metrics_updated.connect(self._on_metrics)
+        self.pipeline.error.connect(self._on_error)
 
         self._partial_row = ""
         self._build_ui()
+        self._load_settings()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -63,13 +77,11 @@ class MainWindow(QMainWindow):
         options = QWidget()
         options_layout = QGridLayout(options)
         self.mic_device = QComboBox()
-        self.mic_device.addItems(["Default Microphone", "USB Mic"])
         self.monitor_device = QComboBox()
-        self.monitor_device.addItems(["Default Monitor", "alsa_output.monitor"])
         self.language = QComboBox()
         self.language.addItems(["en", "pt-BR"])
         self.model = QComboBox()
-        self.model.addItems(["small", "medium", "large"])
+        self.model.addItems(["tiny", "base", "small", "medium", "large-v3"])
         self.aec = QCheckBox("Echo cancellation")
         self.aec.setChecked(True)
 
@@ -104,18 +116,92 @@ class MainWindow(QMainWindow):
         bottom.addWidget(clear_btn)
         bottom.addWidget(save_btn)
 
+        self._dep_bar = self._build_dep_bar()
+
         layout.addLayout(top_row)
+        layout.addWidget(self._dep_bar)
         layout.addWidget(options)
         layout.addWidget(self.transcript)
         layout.addLayout(bottom)
 
         self.setCentralWidget(root)
+        self._refresh_devices()
+        self._check_dependencies()
+
+    # ------------------------------------------------------------------
+    # Dependency checks
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_dep_bar() -> QFrame:
+        bar = QFrame()
+        bar.setFrameShape(QFrame.StyledPanel)
+        bar.setStyleSheet("background: #fff3cd; color: #856404; padding: 4px;")
+        lbl = QLabel(bar)
+        lbl.setObjectName("dep_label")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(6, 2, 6, 2)
+        row.addWidget(lbl)
+        bar.hide()
+        return bar
+
+    def _check_dependencies(self) -> None:
+        missing = [cmd for cmd in ("parec",) if not shutil.which(cmd)]
+        if missing:
+            cmds = ", ".join(missing)
+            label = self._dep_bar.findChild(QLabel, "dep_label")
+            label.setText(
+                f"Missing system tool(s): {cmds}. "
+                "Install pulseaudio-utils (sudo apt install pulseaudio-utils) then restart."
+            )
+            self._dep_bar.show()
+            self.start_btn.setEnabled(False)
+            self.start_btn.setToolTip(f"Cannot start: {cmds} not found")
+
+    # ------------------------------------------------------------------
+    # Device enumeration (#10)
+    # ------------------------------------------------------------------
+
+    def _refresh_devices(self) -> None:
+        mics = list_mics()
+        monitors = list_monitors()
+        self._populate_combo(self.mic_device, mics, "No microphone found")
+        self._populate_combo(self.monitor_device, monitors, "No monitor source found")
+        self.start_btn.setEnabled(bool(mics) or bool(monitors))
+
+    @staticmethod
+    def _populate_combo(combo: QComboBox, devices: list[AudioDevice], placeholder: str) -> None:
+        combo.clear()
+        if devices:
+            for dev in devices:
+                combo.addItem(dev.description, userData=dev)
+        else:
+            combo.addItem(placeholder)
+            combo.setEnabled(False)
+
+    def _selected_device_name(self, combo: QComboBox) -> str:
+        dev = combo.currentData()
+        if isinstance(dev, AudioDevice):
+            return dev.name
+        return combo.currentText()
+
+    # ------------------------------------------------------------------
+    # Session control
+    # ------------------------------------------------------------------
 
     def start_session(self) -> None:
+        if not shutil.which("parec"):
+            QMessageBox.critical(
+                self,
+                "Missing dependency",
+                "parec not found.\n\nInstall it with:\n  sudo apt install pulseaudio-utils",
+            )
+            return
+        self._refresh_devices()
         config = SessionConfig(
             source_mode=SourceMode(self.source_mode.currentText()),
-            mic_device=self.mic_device.currentText(),
-            monitor_device=self.monitor_device.currentText(),
+            mic_device=self._selected_device_name(self.mic_device),
+            monitor_device=self._selected_device_name(self.monitor_device),
             echo_cancellation=self.aec.isChecked(),
             language=self.language.currentText(),
             model=self.model.currentText(),
@@ -123,8 +209,7 @@ class MainWindow(QMainWindow):
         self.pipeline.start(config)
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self.health.setText("Audio activity: active")
-        self.latency.setText("Latency: ~650 ms")
+        self._save_settings()
 
     def stop_session(self) -> None:
         self.pipeline.stop()
@@ -132,6 +217,11 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.health.setText("Audio activity: idle")
         self.latency.setText("Latency: -- ms")
+        self._save_settings()
+
+    # ------------------------------------------------------------------
+    # Signal handlers
+    # ------------------------------------------------------------------
 
     def _on_partial(self, segment: TranscriptSegment) -> None:
         self._partial_row = f"[{segment.source.value}] {segment.text}"
@@ -154,6 +244,23 @@ class MainWindow(QMainWindow):
         color = "#0a0" if value == "Running" else "#a00"
         self.status_label.setStyleSheet(f"font-weight: bold; color: {color};")
 
+    def _on_metrics(self, latency_ms: int, rms_db: float) -> None:
+        self.latency.setText(f"Latency: {latency_ms} ms")
+        active = rms_db > _ACTIVITY_THRESHOLD_DB
+        self.health.setText(f"Audio activity: {'active' if active else 'idle'}")
+
+    def _on_error(self, message: str) -> None:
+        self.statusBar().showMessage(f"Error: {message}", 8000)
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self._set_status("Error")
+        self.health.setText("Audio activity: idle")
+        self.latency.setText("Latency: -- ms")
+
+    # ------------------------------------------------------------------
+    # Transcript actions
+    # ------------------------------------------------------------------
+
     def _clear_transcript(self) -> None:
         self.transcript.clear()
         self._partial_row = ""
@@ -174,6 +281,48 @@ class MainWindow(QMainWindow):
             return
         with open(file_name, "w", encoding="utf-8") as handle:
             handle.write(text + "\n")
+
+    # ------------------------------------------------------------------
+    # Settings persistence (#13)
+    # ------------------------------------------------------------------
+
+    def _load_settings(self) -> None:
+        s = load_settings()
+        self._set_combo_by_text(self.source_mode, s.get("source_mode"))
+        self._set_combo_by_device_name(self.mic_device, s.get("mic_device"))
+        self._set_combo_by_device_name(self.monitor_device, s.get("monitor_device"))
+        self._set_combo_by_text(self.language, s.get("language"))
+        self._set_combo_by_text(self.model, s.get("model"))
+        if "echo_cancellation" in s:
+            self.aec.setChecked(bool(s["echo_cancellation"]))
+
+    def _save_settings(self) -> None:
+        save_settings({
+            "source_mode": self.source_mode.currentText(),
+            "mic_device": self._selected_device_name(self.mic_device),
+            "monitor_device": self._selected_device_name(self.monitor_device),
+            "language": self.language.currentText(),
+            "model": self.model.currentText(),
+            "echo_cancellation": self.aec.isChecked(),
+        })
+
+    @staticmethod
+    def _set_combo_by_text(combo: QComboBox, value: str | None) -> None:
+        if value is None:
+            return
+        idx = combo.findText(value)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    @staticmethod
+    def _set_combo_by_device_name(combo: QComboBox, name: str | None) -> None:
+        if name is None:
+            return
+        for i in range(combo.count()):
+            dev = combo.itemData(i)
+            if isinstance(dev, AudioDevice) and dev.name == name:
+                combo.setCurrentIndex(i)
+                return
 
 
 __all__ = ["MainWindow"]

@@ -10,7 +10,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "PySide6>=6.7",
+  "pulsectl>=23.0",
 ]
+
+[project.optional-dependencies]
+faster-whisper = ["faster-whisper>=1.0", "numpy>=1.24"]
+huggingface = ["transformers>=4.35", "torch>=2.0", "numpy>=1.24"]
 
 [project.scripts]
 echoscriber = "echoscriber.app:main"
