@@ -11,6 +11,7 @@ from .audio.aec import disable_aec, enable_aec, is_available as aec_available
 from .audio.capture import CaptureWorker, LoopbackCapture, MicCapture
 from .models import SegmentSource, SourceMode, TranscriptSegment
 from .services import SessionConfig
+from .transcript_store import TranscriptStore
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class SessionController(QObject):
         self._aec_module_id: int | None = None
         self._segment_start: float = 0.0
         self._last_rms_db: float = -96.0
+        self.store = TranscriptStore()
 
     # ------------------------------------------------------------------
     # Public API
@@ -123,6 +125,7 @@ class SessionController(QObject):
     def _on_segment(self, segment: TranscriptSegment) -> None:
         latency_ms = int((time.monotonic() - self._segment_start) * 1000)
         if segment.is_final:
+            self.store.append(segment)
             self.final_emitted.emit(segment)
             self.metrics_updated.emit(latency_ms, self._last_rms_db)
         else:

@@ -4,6 +4,7 @@ import shutil
 from datetime import datetime
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -15,14 +16,16 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
+from .agent_pane import AgentControls, AgentPane
 from .audio.devices import AudioDevice, list_mics, list_monitors
 from .config import load_settings, save_settings
-from .models import SourceMode, TranscriptSegment
+from .models import AgentMode, AgentResult, SourceMode, TranscriptSegment
 from .services import SessionConfig
 from .session import SessionController
 
@@ -42,9 +45,12 @@ class MainWindow(QMainWindow):
         self.pipeline.metrics_updated.connect(self._on_metrics)
         self.pipeline.error.connect(self._on_error)
 
+        self._agent = None
         self._partial_row = ""
         self._build_ui()
+        self._setup_hotkeys()
         self._load_settings()
+        self._load_agent_plugin()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -99,6 +105,16 @@ class MainWindow(QMainWindow):
         self.transcript.setReadOnly(True)
         self.transcript.setPlaceholderText("Transcript output appears here…")
 
+        self.agent_pane = AgentPane()
+        self.agent_controls = AgentControls()
+        self.agent_controls.triggered.connect(self._on_agent_triggered)
+
+        self._splitter = QSplitter(Qt.Vertical)
+        self._splitter.addWidget(self.transcript)
+        self._splitter.addWidget(self.agent_pane)
+        self._splitter.setSizes([650, 350])
+        self.agent_pane.setVisible(False)
+
         bottom = QHBoxLayout()
         self.latency = QLabel("Latency: -- ms")
         self.health = QLabel("Audio activity: idle")
@@ -112,6 +128,7 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.latency)
         bottom.addWidget(self.health)
         bottom.addStretch(1)
+        bottom.addWidget(self.agent_controls)
         bottom.addWidget(copy_btn)
         bottom.addWidget(clear_btn)
         bottom.addWidget(save_btn)
@@ -121,7 +138,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(top_row)
         layout.addWidget(self._dep_bar)
         layout.addWidget(options)
-        layout.addWidget(self.transcript)
+        layout.addWidget(self._splitter)
         layout.addLayout(bottom)
 
         self.setCentralWidget(root)
@@ -323,6 +340,63 @@ class MainWindow(QMainWindow):
             if isinstance(dev, AudioDevice) and dev.name == name:
                 combo.setCurrentIndex(i)
                 return
+
+    # ------------------------------------------------------------------
+    # Agent plugin (#agent)
+    # ------------------------------------------------------------------
+
+    def _load_agent_plugin(self) -> None:
+        settings = load_settings()
+        plugin_module = settings.get("agent_plugin", "echoscriber.agents.echo_agent")
+        try:
+            import importlib
+
+            mod = importlib.import_module(plugin_module)
+            plugin = mod.create_plugin()
+            plugin.attach(self.pipeline.store)
+
+            agent_cfg = settings.get("agent", {})
+            if hasattr(plugin, "configure"):
+                plugin.configure(
+                    provider=agent_cfg.get("provider", "anthropic"),
+                    model=agent_cfg.get("model", "claude-sonnet-4-20250514"),
+                    api_key=agent_cfg.get("api_key"),
+                    base_url=agent_cfg.get("base_url"),
+                    token_budget=agent_cfg.get("token_budget", 8000),
+                )
+
+            plugin.token_received.connect(self.agent_pane.append_token)
+            plugin.completed.connect(self._on_agent_completed)
+            plugin.error.connect(self._on_agent_error)
+
+            self._agent = plugin
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("Agent plugin unavailable: %s", exc)
+            self.agent_controls.set_enabled(False)
+
+    def _setup_hotkeys(self) -> None:
+        trigger = QShortcut(QKeySequence("Ctrl+Shift+A"), self)
+        trigger.activated.connect(lambda: self.agent_controls._fire())
+
+        qa = QShortcut(QKeySequence("Ctrl+Shift+Q"), self)
+        qa.activated.connect(lambda: self.agent_controls.focus_qa())
+
+    def _on_agent_triggered(self, mode: AgentMode, query: str) -> None:
+        if self._agent is None:
+            return
+        self.agent_pane.setVisible(True)
+        self.agent_pane.start_card(mode, query or None)
+        self.agent_controls.set_enabled(False)
+        self._agent.run(mode, query or None)
+
+    def _on_agent_completed(self, result: AgentResult) -> None:
+        self.agent_pane.finalize(result)
+        self.agent_controls.set_enabled(True)
+
+    def _on_agent_error(self, message: str) -> None:
+        self.agent_pane.show_error(message)
+        self.agent_controls.set_enabled(True)
 
 
 __all__ = ["MainWindow"]
