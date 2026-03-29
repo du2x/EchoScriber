@@ -188,7 +188,7 @@ The goal is to provide a single desktop app that makes realtime transcription pr
 
 ### 8.1 Performance
 
-* Partial transcript latency target: **< 800 ms** on supported GPU-equipped hardware.
+* Partial transcript latency target: **< 2 s** on supported GPU-equipped hardware.
 * Final segment emission target: **1–3 s** depending on model and hardware.
 * App startup to ready: **< 5 s** excluding first model download.
 
@@ -360,6 +360,16 @@ Priority should be given to model/runtime combinations that behave well for:
 * English
 * code-switching tolerance between the two languages
 
+### HuggingFace models
+
+HuggingFace Hub hosts community fine-tunes of Whisper (and other ASR models) specifically trained on PT-BR corpora that significantly outperform base Whisper models for that language. These should be evaluated alongside the default Whisper model tiers.
+
+**Integration approach:**
+
+* `faster-whisper` supports loading HuggingFace Hub models directly (`WhisperModel("username/model-id", ...)`), covering models that have been converted to CTranslate2 format.
+* For fine-tuned models only available in `transformers` format (not yet converted), implement a second `STTEngine` adapter backed by `transformers.pipeline("automatic-speech-recognition")`. This trades some inference speed for access to a wider set of PT-BR fine-tunes.
+* Expose both adapters as selectable backends in the UI model dropdown. Default to faster-whisper for lower latency; allow the user to switch to a HuggingFace transformers model for higher PT-BR accuracy.
+
 ### Engine abstraction
 
 Design a backend interface so multiple STT engines can be swapped:
@@ -382,7 +392,7 @@ This reduces lock-in and allows experimentation.
 * User can install and transcribe from mic in under 10 minutes.
 * User can transcribe Linux system playback loopback on mainstream PipeWire distributions.
 * Echo leakage into mic transcripts is materially reduced in common desktop conditions.
-* Median partial latency under 1 second on target GPU-equipped hardware.
+* Median partial latency under 2 seconds on target GPU-equipped hardware.
 * The tool feels usable for real developer workflows: calls, demos, debugging, and technical note capture.
 
 ### Product quality metrics
