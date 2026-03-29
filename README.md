@@ -172,14 +172,41 @@ pip install -e ".[agent]"
 
 # With specific STT backend
 pip install -e ".[faster-whisper]"
+
+# Full install (recommended)
 pip install -e ".[agent,faster-whisper]"
 ```
+
+**Important:** Always run `echoscriber` from the virtualenv where you installed the extras. If you install with just `pip install -e .` (or into a global Python), `torch` and `faster-whisper` won't be available and the STT engine will silently fall back to CPU — or fail to load entirely.
 
 ### System dependencies
 
 ```bash
 sudo apt install pulseaudio-utils   # provides parec for audio capture
 ```
+
+### GPU acceleration
+
+GPU inference requires an NVIDIA GPU with CUDA support. The STT engine auto-detects CUDA via `torch.cuda.is_available()` and uses it when present.
+
+To verify GPU is working:
+
+```bash
+# Check CUDA is visible to Python
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+
+# Check faster-whisper loads on GPU
+python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cuda', compute_type='float16'); print('GPU OK')"
+
+# Monitor GPU usage while EchoScriber is running
+watch -n 1 nvidia-smi
+```
+
+If `torch.cuda.is_available()` returns `False`, the STT engine falls back to CPU silently. Common causes:
+- `torch` not installed (install with `pip install -e ".[faster-whisper]"`)
+- Running `echoscriber` outside the virtualenv where torch was installed
+- NVIDIA drivers or CUDA toolkit not installed on the system
+- PyTorch installed without CUDA support (CPU-only wheel)
 
 ### Configuration
 
