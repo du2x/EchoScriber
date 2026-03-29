@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from ...models import AgentMode, TranscriptSegment
 from ...transcript_store import TranscriptStore
+from .prompts import CHUNK_SUMMARY_PROMPT
+
+if TYPE_CHECKING:
+    from ...agent_api import LLMBackend
+
+logger = logging.getLogger(__name__)
+
+_CHUNK_MINUTES = 10.0
+_LIVE_WINDOW_SECONDS = 300  # don't summarize the last 5 minutes
 
 
 def _format_segments(segments: list[TranscriptSegment]) -> str:
@@ -46,6 +58,66 @@ class ContextBuilder:
             return self._for_explain(query or "")
         return self._for_summary()
 
+    async def ensure_summaries(self, llm: LLMBackend) -> None:
+        """Lazily generate chunk summaries for unsummarized portions of the session."""
+        latest_end = self._store.latest_summary_end()
+        start = latest_end if latest_end is not None else 0.0
+        cutoff = time.time() - _LIVE_WINDOW_SECONDS
+
+        if start >= cutoff:
+            return  # nothing to summarize
+
+        rows = self._store.segments_in_range(start, cutoff)
+        if len(rows) < 5:
+            return  # not enough material to summarize
+
+        # Group into chunks of ~10 minutes
+        chunks: list[list[tuple[int, TranscriptSegment]]] = []
+        current_chunk: list[tuple[int, TranscriptSegment]] = []
+        chunk_start_ts = rows[0][1].timestamp
+
+        for row in rows:
+            seg_id, seg = row
+            if seg.timestamp - chunk_start_ts >= _CHUNK_MINUTES * 60 and current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = []
+                chunk_start_ts = seg.timestamp
+            current_chunk.append(row)
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        for chunk in chunks:
+            segment_ids = [row[0] for row in chunk]
+            segments = [row[1] for row in chunk]
+            chunk_text = _format_segments(segments)
+
+            if _estimate_tokens(chunk_text) < 20:
+                continue  # too short to be worth summarizing
+
+            try:
+                summary = await llm.complete(
+                    CHUNK_SUMMARY_PROMPT,
+                    [{"role": "user", "content": chunk_text}],
+                )
+                self._store.save_chunk_summary(
+                    chunk_start=segments[0].timestamp,
+                    chunk_end=segments[-1].timestamp,
+                    segment_ids=segment_ids,
+                    summary=summary,
+                    model_used="agent",
+                )
+                logger.info(
+                    "Cached chunk summary: %s–%s (%d segments)",
+                    datetime.fromtimestamp(segments[0].timestamp).strftime("%H:%M"),
+                    datetime.fromtimestamp(segments[-1].timestamp).strftime("%H:%M"),
+                    len(segments),
+                )
+            except Exception:
+                logger.exception("Failed to summarize chunk")
+
+    # -- Context assembly per mode ----------------------------------------
+
     def _for_summary(self) -> str:
         segments = self._store.recent(15.0)
         if not segments:
@@ -63,10 +135,8 @@ class ContextBuilder:
                 for c in cached
             )
             latest_end = cached[-1]["chunk_end"]
-            recent = self._store.recent(
-                max(0, (self._store._conn.execute("SELECT ?", (latest_end,)).fetchone()[0]
-                         - latest_end) / 60) or 10.0
-            )
+            minutes_since = max(0, (time.time() - latest_end) / 60) or 10.0
+            recent = self._store.recent(minutes_since)
         else:
             summaries = ""
             recent = self._store.all_segments()

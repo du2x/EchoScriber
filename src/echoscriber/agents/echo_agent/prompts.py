@@ -41,3 +41,10 @@ PROMPTS: dict[AgentMode, str] = {
         "Respond in the same language as the question."
     ),
 }
+
+CHUNK_SUMMARY_PROMPT = (
+    "Summarize this transcript chunk concisely. "
+    "Preserve key facts, decisions, names, action items, and technical details. "
+    "2-4 sentences maximum. Do not add commentary — just summarize what was said. "
+    "Respond in the same language as the transcript."
+)

@@ -50,7 +50,10 @@ class OllamaBackend:
                 async for line in resp.aiter_lines():
                     if not line:
                         continue
-                    data = json.loads(line)
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
                     content = data.get("message", {}).get("content", "")
                     if content:
                         yield content

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ...agent_api import LLMBackend
+from ....agent_api import LLMBackend
 
 
 def create_backend(
