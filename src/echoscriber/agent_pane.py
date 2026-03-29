@@ -61,7 +61,7 @@ class AgentCard(QWidget):
 class AgentControls(QWidget):
     """Mode dropdown + Ask Agent button + prompt field."""
 
-    triggered = Signal(AgentMode, str)  # mode, query (empty for zero-input modes)
+    triggered = Signal(object, str)  # mode (AgentMode), query (empty for zero-input modes)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
