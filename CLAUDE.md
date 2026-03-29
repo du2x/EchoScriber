@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Setup
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e ".[agent,faster-whisper]"
 
 # Run the app
 echoscriber
@@ -19,22 +19,44 @@ python -m compileall src
 
 ## Architecture
 
-EchoScriber is a Linux desktop speech-to-text app built with **Python 3.10+ and PySide6 (Qt6)**. The architecture follows Qt's signal/slot pattern across four modules:
+EchoScriber is a Linux desktop app for experimenting with agentic systems on realtime conversations. Built with **Python 3.10+ and PySide6 (Qt6)**.
+
+### Core modules
 
 - **`app.py`** — Entry point. Creates `QApplication`, instantiates `MainWindow`, runs the Qt event loop.
-- **`models.py`** — Data layer: `SourceMode` enum (MIC/SYSTEM/BOTH), `TranscriptSegment` dataclass, and the `STTEngine` Protocol (abstract interface for future STT backends).
-- **`services.py`** — Business logic. `SessionConfig` holds user settings. `MockRealtimePipeline` (a `QObject`) simulates realtime transcription by emitting `segment_ready` signals on a timer. Real audio capture and STT are not yet implemented.
-- **`gui.py`** — UI layer. `MainWindow` builds all controls, connects pipeline signals to UI slots. Partial transcripts go to the status bar; final segments are timestamped and appended to a `QTextEdit`.
+- **`models.py`** — Data layer: `SourceMode`, `SegmentSource`, `AgentMode` enums, `TranscriptSegment` and `AgentResult` dataclasses, `STTEngine` Protocol.
+- **`services.py`** — `SessionConfig` dataclass and legacy `MockRealtimePipeline`.
+- **`session.py`** — `SessionController` orchestrates audio capture → AEC → STT → transcript store. Emits Qt signals for partial/final segments, metrics, and errors.
+- **`gui.py`** — UI layer with transcript pane, agent pane (65/35 splitter), device/model controls, and agent plugin loader.
+- **`config.py`** — Settings persistence in `~/.config/echoscriber/settings.json`.
 
-**Control flow:** User clicks Start → `SessionConfig` is built from UI state → `pipeline.start(config)` → timer ticks → signals emitted → UI slots update.
+### Audio subsystem (`audio/`)
 
-## Current State
+- **`devices.py`** — PipeWire/PulseAudio device enumeration via pulsectl.
+- **`capture.py`** — Mic and loopback capture workers (QThread-based, using `parec`).
+- **`aec.py`** — Echo cancellation via PipeWire module loading.
 
-This is a **mock scaffold**. The GUI and data models are complete, but the following are not yet implemented:
-- Real audio capture (mic or system loopback via PipeWire)
-- Echo cancellation (WebRTC AEC)
-- Real STT backends (faster-whisper)
-- PipeWire device enumeration
-- Persistence (settings storage)
+### STT subsystem (`stt/`)
 
-The PRD (`PRD.md`) describes the full product vision, technical direction, and prioritized backlog (P0/P1/P2). The planned stack is: **PipeWire** for audio, **faster-whisper** for STT, **WebRTC AEC** for echo cancellation, with GPU inference support. Languages targeted are Portuguese (Brazil) and English.
+- **`whisper_adapter.py`** — faster-whisper backend.
+- **`hf_adapter.py`** — HuggingFace transformers backend.
+
+### Agent system
+
+- **`agent_api.py`** — Plugin contract: `TranscriptFeed` and `AgentPlugin` protocols. This is the stable boundary.
+- **`transcript_store.py`** — SQLite + FTS5 store implementing `TranscriptFeed`. Stores segments, supports full-text search, caches chunk summaries.
+- **`agent_pane.py`** — GUI widget: collapsible panel with streaming result cards, mode dropdown, prompt field.
+- **`agents/echo_agent/`** — Default `AgentPlugin` implementation:
+  - `plugin.py` — `EchoAgent` class wiring context builder → LLM → streaming results.
+  - `context.py` — Adaptive context assembly per mode (recent window, full session, FTS5 search).
+  - `prompts.py` — System prompts per `AgentMode`.
+  - `llm/` — Provider-agnostic backends: Anthropic, OpenAI, Ollama.
+
+### Control flow
+
+1. **Transcription**: Start → `SessionController` → audio workers → STT → `TranscriptSegment` → store + GUI
+2. **Agent**: User triggers mode → `AgentPlugin.run()` → `ContextBuilder` reads store → LLM stream → `AgentPane` renders cards
+
+### Plugin contract
+
+Any module exposing `create_plugin() -> AgentPlugin` can replace the default agent. Set `agent_plugin` in settings. See `agent_api.py` for protocols.
