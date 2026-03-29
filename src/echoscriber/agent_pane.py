@@ -86,7 +86,15 @@ class AgentControls(QWidget):
         layout.addWidget(self._btn)
 
     def _current_mode(self) -> AgentMode:
-        return self._mode.currentData()
+        data = self._mode.currentData()
+        if isinstance(data, AgentMode):
+            return data
+        # PySide6 may return userData as string — look up by display text
+        text = self._mode.currentText()
+        for m in AgentMode:
+            if m.value == text:
+                return m
+        return AgentMode.SUMMARY
 
     def _on_mode_changed(self) -> None:
         mode = self._current_mode()
