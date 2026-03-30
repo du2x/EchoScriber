@@ -398,7 +398,22 @@ class MainWindow(QMainWindow):
         if self._agent is None:
             return
         self.agent_pane.setVisible(True)
-        self.agent_pane.start_card(mode, query or None)
+
+        _PERSUASION_MODES = (AgentMode.PERSUADE, AgentMode.DEBRIEF)
+        if mode in _PERSUASION_MODES:
+            # Show goal as card subtitle only on first set
+            card_query = f"Goal: {query}" if query else None
+            # Persist goal to settings
+            if query:
+                existing = load_settings()
+                persuasion = existing.get("persuasion", {})
+                persuasion["goal"] = query
+                existing["persuasion"] = persuasion
+                save_settings(existing)
+        else:
+            card_query = query or None
+
+        self.agent_pane.start_card(mode, card_query)
         self.agent_controls.set_enabled(False)
         self._agent.run(mode, query or None)
 

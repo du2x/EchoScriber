@@ -138,9 +138,13 @@ class EchoAgent(QObject):
             self.error.emit("Agent not configured. Set LLM provider in settings.")
             return
 
-        if mode in _PERSUASION_MODES and not self._persuasion_goal:
-            self.error.emit("No persuasion goal set. Add a goal to the 'persuasion' section in settings.")
-            return
+        # For persuasion modes, the query field carries the goal
+        if mode in _PERSUASION_MODES:
+            if query:
+                self._persuasion_goal = query
+            if not self._persuasion_goal:
+                self.error.emit("No goal set. Type your goal in the prompt field.")
+                return
 
         # Cancel any in-flight worker
         if self._worker is not None and self._worker.isRunning():

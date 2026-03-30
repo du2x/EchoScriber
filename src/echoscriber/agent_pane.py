@@ -96,15 +96,23 @@ class AgentControls(QWidget):
                 return m
         return AgentMode.SUMMARY
 
+    _PERSUASION_MODES = (AgentMode.PERSUADE, AgentMode.DEBRIEF)
+
     def _on_mode_changed(self) -> None:
         mode = self._current_mode()
         self._prompt.setVisible(mode.needs_prompt)
+        if mode in self._PERSUASION_MODES:
+            self._prompt.setPlaceholderText("Set your goal (e.g. convince CTO to adopt Rust)…")
+        else:
+            self._prompt.setPlaceholderText("Ask a question…")
 
     def _fire(self) -> None:
         mode = self._current_mode()
         query = self._prompt.text().strip() if mode.needs_prompt else ""
         self.triggered.emit(mode, query)
-        self._prompt.clear()
+        # Keep the goal text for persuasion modes so it persists across triggers
+        if mode not in self._PERSUASION_MODES:
+            self._prompt.clear()
 
     def focus_qa(self) -> None:
         """Switch to Q&A mode and focus the prompt field."""

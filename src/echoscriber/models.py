@@ -28,7 +28,7 @@ class AgentMode(str, Enum):
 
     @property
     def needs_prompt(self) -> bool:
-        return self in (AgentMode.QA, AgentMode.EXPLAIN)
+        return self in (AgentMode.QA, AgentMode.EXPLAIN, AgentMode.PERSUADE, AgentMode.DEBRIEF)
 
 
 @dataclass(slots=True)
