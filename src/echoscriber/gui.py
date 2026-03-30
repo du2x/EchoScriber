@@ -367,6 +367,16 @@ class MainWindow(QMainWindow):
                     token_budget=agent_cfg.get("token_budget", 8000),
                 )
 
+            persuasion_cfg = settings.get("persuasion", {})
+            if hasattr(plugin, "configure_persuasion") and persuasion_cfg:
+                plugin.configure_persuasion(
+                    goal=persuasion_cfg.get("goal", ""),
+                    provider=persuasion_cfg.get("provider"),
+                    model=persuasion_cfg.get("model"),
+                    api_key=persuasion_cfg.get("api_key"),
+                    base_url=persuasion_cfg.get("base_url"),
+                )
+
             plugin.token_received.connect(self.agent_pane.append_token)
             plugin.completed.connect(self._on_agent_completed)
             plugin.error.connect(self._on_agent_error)

@@ -56,6 +56,10 @@ class ContextBuilder:
             return self._for_qa(query or "")
         if mode == AgentMode.EXPLAIN:
             return self._for_explain(query or "")
+        if mode == AgentMode.PERSUADE:
+            return self._for_persuade()
+        if mode == AgentMode.DEBRIEF:
+            return self._for_full_session()
         return self._for_summary()
 
     async def ensure_summaries(self, llm: LLMBackend) -> None:
@@ -166,4 +170,11 @@ class ContextBuilder:
         if not recent:
             return "(No transcript yet.)"
         text = _format_segments(recent)
+        return _trim_to_budget(text, self._budget)
+
+    def _for_persuade(self) -> str:
+        segments = self._store.recent(10.0)
+        if not segments:
+            return "(No transcript yet.)"
+        text = _format_segments(segments)
         return _trim_to_budget(text, self._budget)

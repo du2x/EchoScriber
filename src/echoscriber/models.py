@@ -23,6 +23,8 @@ class AgentMode(str, Enum):
     ACTIONS = "Action Items"
     QA = "Q&A"
     EXPLAIN = "Explain"
+    PERSUADE = "Persuade"
+    DEBRIEF = "Debrief"
 
     @property
     def needs_prompt(self) -> bool:
